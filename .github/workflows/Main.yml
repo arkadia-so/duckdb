@@ -22,26 +22,28 @@ on:
       run_all:
         type: boolean
         default: true
+      cache:
+        description: outrun's cache namespace (ARK-81 bench; a fresh one is a cold cache)
+        type: string
+        default: outrun
       extension_exclude_archs:
         description: 'Extra extension archs to skip, separated by ";" (e.g. windows_amd64)'
         type: string
         default: ''
-  push:
-    branches-ignore:
-      - 'main'
-      - 'feature'
-      - 'v*.*-*'
-      - 'gh-readonly-queue/**'
-  merge_group:
-  pull_request:
-    types: [opened, reopened, ready_for_review, converted_to_draft, synchronize]
+  # ARK-81 engine bench: dispatched only (no push/pull_request runs).
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/v')) || github.run_id }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  id-token: write
+
 env:
   GH_TOKEN: ${{ secrets.GH_TOKEN }}
+  OUTRUN_CACHE_URL: https://turbo-cache.arkadia.so
+  OUTRUN_CACHE_TEAM: ${{ inputs.cache || 'outrun' }}
   # Override extension CI matrix reduction with "enabled" or "disabled".
   # Use "disabled" on risky PRs to run the full extension matrix.
   # OVERRIDE_REDUCED_CI_MODE: disabled
@@ -288,7 +290,13 @@ jobs:
           echo "::endgroup::"
 
  linux-relassert:
-    name: Linux Relassert
+    name: Linux Relassert (${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # outrun (ARK-81): the tests run in the build job, in 3 shards plus the benchmark SQL, each
+        # building warm from the shared ccache (one job id) instead of downloading the build (252 s).
+        shard: ['1', '2', '3', 'bench']
     # This tests release build while enabling slow verifiers (masked by #ifdef DEBUG) and sanitizers
     if: ${{ contains(fromJson(needs.prepare.outputs.enabled_jobs), 'linux-relassert') }}
     needs: prepare
@@ -314,18 +322,31 @@ jobs:
         runner_provider: ${{ needs.prepare.outputs.runner_provider }}
         fetch_depth: ${{ github.event_name == 'workflow_dispatch' && '0' || '1' }}
         ref: ${{ needs.prepare.outputs.duckdb_commit }}
-
-    - uses: ./.github/actions/ccache-action
+    - name: "outrun: start"
+      id: start
+      run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+    - name: "outrun: Bun"
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       with:
-        save: ${{ fromJson(needs.prepare.outputs.save_cache) }}
-
+        bun-version: 1.4.4
+    - name: "outrun: look relassert-${{ matrix.shard }} up"
+      id: look
+      shell: bash
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        .github/outrun/run lookup "relassert-${{ matrix.shard }}"
+    - uses: ./.github/actions/ccache-action
+      if: steps.look.outputs.run == 'true'
+      with:
+        save: ${{ matrix.shard == '1' && fromJson(needs.prepare.outputs.save_cache) }}
     - name: Write changed tests file
+      if: steps.look.outputs.run == 'true'
       shell: bash
       env:
         CHANGED_TESTS_FILES: ${{ needs.prepare.outputs.changed_tests_files }}
       run: printf '%s\n' "$CHANGED_TESTS_FILES" | sed '/^$/d' > "$RUNNER_TEMP/changed_tests.txt"
-
     - name: Build DuckDB
+      if: steps.look.outputs.run == 'true'
       uses: duckdb/duckdb-ci/build-duckdb@main
       env:
         CORE_EXTENSIONS: "icu;tpch;tpcds;fts;json;inet;parquet;autocomplete;httpfs"
@@ -334,57 +355,27 @@ jobs:
         build-type: relassert
         build: python3 scripts/ci/retry.py -- make relassert
         vcpkg-commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
-        test: make smoke T="--changed-tests=$RUNNER_TEMP/changed_tests.txt"
-        bundle: make relassert-artifact
-        upload-name: linux-relassert-build
-        upload-path: build/relassert-artifact.tar.gz
-        save-cache: ${{ fromJson(needs.prepare.outputs.save_cache) }}
-
+        test: ${{ matrix.shard == '1' && 'make smoke T="--changed-tests=$RUNNER_TEMP/changed_tests.txt"' || '' }}
+        save-cache: ${{ matrix.shard == '1' && fromJson(needs.prepare.outputs.save_cache) }}
     - name: Output version info
+      if: steps.look.outputs.run == 'true'
       run: ./build/relassert/duckdb -c "PRAGMA version;"
-
- linux-relassert-tests:
-    name: Linux Relassert Tests
-    if: ${{ contains(fromJson(needs.prepare.outputs.enabled_jobs), 'linux-relassert-tests') }}
-    needs:
-      - prepare
-      - linux-relassert
-    runs-on: outrun-linux-arm64
-    container:
-      image: ${{ fromJson(needs.prepare.outputs.images).manylinux_arm64_main }}
-    env:
-      DUCKDB_VERSION: ${{ needs.prepare.outputs.duckdb_version }}
-      DUCKDB_COMMIT: ${{ needs.prepare.outputs.duckdb_commit }}
-
-    steps:
-    - name: "Checkout"
-      uses: duckdb/duckdb-ci/.github/actions/checkout@main
-      with:
-        runner_provider: ${{ needs.prepare.outputs.runner_provider }}
-        ref: ${{ needs.prepare.outputs.duckdb_commit }}
-    - name: Download relassert build artifact
-      uses: actions/download-artifact@v8
-      with:
-        name: linux-relassert-build
-        path: build
-
-    - name: Extract relassert build artifact
-      run: |
-        rm -rf build/relassert
-        tar -xzf build/relassert-artifact.tar.gz -C build
-        ls -lh build/relassert/test/unittest
-
     - name: Set DUCKDB_INSTALL_LIB for ADBC tests
+      if: steps.look.outputs.run == 'true'
       run: echo "DUCKDB_INSTALL_LIB=$(find "$PWD" -name 'libduck*.so' | head -n 1)" >> "$GITHUB_ENV"
-
-    - name: Test DUCKDB_INSTALL_LIB variable
-      run: echo "$DUCKDB_INSTALL_LIB"
-
     - name: Test
-      run: make unittest_relassert
-
+      if: steps.look.outputs.run == 'true' && (matrix.shard != 'bench')
+      run: |
+        build/relassert/test/unittest --list-tests > "$RUNNER_TEMP/all.list" || true
+        python3 .github/outrun/split.py "$RUNNER_TEMP/all.list" ${{ matrix.shard }} 3 > "$RUNNER_TEMP/shard.list"
+        build/relassert/test/run --track-runtime=100 --test-list "$RUNNER_TEMP/shard.list"
     - name: Test Benchmark SQL
+      if: steps.look.outputs.run == 'true' && (matrix.shard == 'bench')
       run: make test_benchmark_sql
+    - name: "outrun: record relassert-${{ matrix.shard }}"
+      if: success() && steps.look.outputs.run == 'true'
+      shell: bash
+      run: .github/outrun/run record "relassert-${{ matrix.shard }}" --key "${{ steps.look.outputs.key }}" --since ${{ steps.start.outputs.at }}
 
  osx:
     if: ${{ contains(fromJson(needs.prepare.outputs.enabled_jobs), 'osx') }}
@@ -398,3 +389,4 @@ jobs:
       runner_macos_arm64: outrun-macos
       skip_tests: ${{ fromJson(needs.prepare.outputs.skip_tests) }}
       run_all: ${{ github.event_name != 'workflow_dispatch' || inputs.run_all }}
+      cache: ${{ inputs.cache || 'outrun' }}

@@ -1,0 +1,72 @@
+{
+  "inputs": [],
+  "env": [],
+  "suites": [],
+  "trustedRef": "refs/heads/bench/engine",
+  "commands": [
+    {
+      "name": "relassert-1",
+      "run": "make relassert (ccache) + unittest shard 1/3 (round-robin) + smoke",
+      "inputs": [
+        "**/*",
+        "!**/*.md"
+      ]
+    },
+    {
+      "name": "relassert-2",
+      "run": "make relassert (ccache) + unittest shard 2/3 (round-robin)",
+      "inputs": [
+        "**/*",
+        "!**/*.md"
+      ]
+    },
+    {
+      "name": "relassert-3",
+      "run": "make relassert (ccache) + unittest shard 3/3 (round-robin)",
+      "inputs": [
+        "**/*",
+        "!**/*.md"
+      ]
+    },
+    {
+      "name": "relassert-bench",
+      "run": "make relassert (ccache) + make test_benchmark_sql",
+      "inputs": [
+        "**/*",
+        "!**/*.md"
+      ]
+    },
+    {
+      "name": "osx-debug-1",
+      "run": "make (ccache) + unittest_release shard 1/2 + LLDB",
+      "inputs": [
+        "**/*",
+        "!**/*.md"
+      ]
+    },
+    {
+      "name": "osx-debug-2",
+      "run": "make (ccache) + unittest_release shard 2/2",
+      "inputs": [
+        "**/*",
+        "!**/*.md"
+      ]
+    },
+    {
+      "name": "osx-release-1",
+      "run": "make universal (ccache) + allunit shard 1/2 + deploy, tools, stdin, examples",
+      "inputs": [
+        "**/*",
+        "!**/*.md"
+      ]
+    },
+    {
+      "name": "osx-release-2",
+      "run": "make universal (ccache) + allunit shard 2/2",
+      "inputs": [
+        "**/*",
+        "!**/*.md"
+      ]
+    }
+  ]
+}

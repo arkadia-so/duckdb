@@ -14,6 +14,8 @@ on:
         type: boolean
       run_all:
         type: boolean
+      cache:
+        type: string
 
 concurrency:
   group: osx-${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}-${{ inputs.duckdb_version }}
@@ -21,12 +23,19 @@ concurrency:
 
 env:
   GH_TOKEN: ${{ secrets.GH_TOKEN }}
+  OUTRUN_CACHE_URL: https://turbo-cache.arkadia.so
+  OUTRUN_CACHE_TEAM: ${{ inputs.cache || 'outrun' }}
   DUCKDB_VERSION: ${{ inputs.duckdb_version }}
   DUCKDB_COMMIT: ${{ inputs.duckdb_commit }}
 
 jobs:
   xcode-debug:
-    name: OSX Debug
+    name: OSX Debug (${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # outrun (ARK-81): 2 shards of the unit tests, each building warm from the shared ccache.
+        shard: ['1', '2']
     runs-on: ${{ inputs.runner_macos_arm64 || 'macos-latest' }}
 
     env:
@@ -40,35 +49,52 @@ jobs:
       with:
         fetch-depth: 0
         ref: ${{ inputs.duckdb_commit }}
-
+    - name: "outrun: start"
+      id: start
+      run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+    - name: "outrun: Bun"
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: 1.4.4
+    - name: "outrun: look osx-debug-${{ matrix.shard }} up"
+      id: look
+      shell: bash
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        .github/outrun/run lookup "osx-debug-${{ matrix.shard }}"
     - uses: actions/setup-python@v6
+      if: steps.look.outputs.run == 'true'
       with:
         python-version: '3.12'
-
     - uses: ./.github/actions/ccache-action
-
+      if: steps.look.outputs.run == 'true'
+      with:
+        save: ${{ matrix.shard == '1' && (github.repository != 'duckdb/duckdb' || github.event_name == 'workflow_dispatch') }}
     - name: Install ninja
+      if: steps.look.outputs.run == 'true'
       run: python3 scripts/ci/retry.py -- brew install ninja
-
     - uses: ./.github/actions/cleanup_runner
-
+      if: steps.look.outputs.run == 'true'
     - name: Build
+      if: steps.look.outputs.run == 'true'
       run: python3 scripts/ci/retry.py -- make
-
     - name: Set DUCKDB_INSTALL_LIB for ADBC tests
+      if: steps.look.outputs.run == 'true'
       shell: bash
       run: echo "DUCKDB_INSTALL_LIB=$(find "$PWD" -name 'libduck*.dylib' | head -n 1)" >> "$GITHUB_ENV"
-
     - name: Test DUCKDB_INSTALL_LIB variable
+      if: steps.look.outputs.run == 'true'
       run: echo "$DUCKDB_INSTALL_LIB"
-
     - name: Test
-      if: ${{ !inputs.skip_tests }}
-      run: make unittest_release
+      if: steps.look.outputs.run == 'true' && (!inputs.skip_tests)
+      run: |
+        build/release/test/unittest --list-tests > "$RUNNER_TEMP/all.list" || true
+        python3 .github/outrun/split.py "$RUNNER_TEMP/all.list" ${{ matrix.shard }} 2 > "$RUNNER_TEMP/shard.list"
+        build/release/test/run --test-list "$RUNNER_TEMP/shard.list"
 
     # SQL navigation needs the query_break hook and locals that release builds optimize away.
     - name: Build debug executable for LLDB
-      if: ${{ !inputs.skip_tests }}
+      if: steps.look.outputs.run == 'true' && (matrix.shard == '1') && (!inputs.skip_tests)
       timeout-minutes: 60
       env:
         DISABLE_SHELL: 1
@@ -76,26 +102,32 @@ jobs:
         TREAT_WARNINGS_AS_ERRORS: 0
         EXTRA_CMAKE_VARIABLES: -DTREAT_WARNINGS_AS_ERRORS=OFF
       run: python3 scripts/ci/retry.py -- make debug
-
     - name: LLDB helper tests
       id: lldb-tests
-      if: ${{ !inputs.skip_tests }}
+      if: steps.look.outputs.run == 'true' && (matrix.shard == '1') && (!inputs.skip_tests)
       timeout-minutes: 5
       run: |
         python3 scripts/lldb/tests/run_tests.py --unittest build/debug/test/unittest \
           --lldb "$(xcrun --find lldb)" \
           --coverage-dir build/lldb-coverage
-
     - name: Upload LLDB coverage
-      if: ${{ !cancelled() && steps.lldb-tests.outcome != 'skipped' }}
+      if: steps.look.outputs.run == 'true' && (matrix.shard == '1') && (!cancelled() && steps.lldb-tests.outcome != 'skipped')
       uses: actions/upload-artifact@v7
       with:
         name: lldb-coverage-osx
         path: build/lldb-coverage
-
+    - name: "outrun: record osx-debug-${{ matrix.shard }}"
+      if: success() && steps.look.outputs.run == 'true'
+      shell: bash
+      run: .github/outrun/run record "osx-debug-${{ matrix.shard }}" --key "${{ steps.look.outputs.key }}" --since ${{ steps.start.outputs.at }}
   xcode-release:
     # Builds binaries for osx_arm64 and osx_amd64
-    name: OSX Release
+    name: OSX Release (${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # outrun (ARK-81): 2 shards of the unit tests, each building warm from the shared ccache.
+        shard: ['1', '2']
     runs-on: ${{ inputs.runner_macos_arm64 || 'macos-latest' }}
     env:
       EXTENSION_CONFIGS: '${GITHUB_WORKSPACE}/.github/config/bundled_extensions.cmake'
@@ -108,38 +140,52 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ inputs.duckdb_commit }}
-
+      - name: "outrun: start"
+        id: start
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: "outrun: Bun"
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - name: "outrun: look osx-release-${{ matrix.shard }} up"
+        id: look
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          .github/outrun/run lookup "osx-release-${{ matrix.shard }}"
       - uses: actions/setup-python@v6
+        if: steps.look.outputs.run == 'true'
         with:
           python-version: '3.12'
-
       - name: Install Ninja
+        if: steps.look.outputs.run == 'true'
         run: python3 scripts/ci/retry.py -- brew install ninja
-
       - uses: ./.github/actions/ccache-action
-
+        if: steps.look.outputs.run == 'true'
+        with:
+          save: ${{ matrix.shard == '1' && (github.repository != 'duckdb/duckdb' || github.event_name == 'workflow_dispatch') }}
       - name: Install pytest
+        if: steps.look.outputs.run == 'true'
         run: |
           python3 scripts/ci/retry.py -- python -m pip install --break-system-packages pytest
-
       - name: Build
+        if: steps.look.outputs.run == 'true'
         run: python3 scripts/ci/retry.py -- make
-
-
       - name: CLI check
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         run: |
           ./build/release/duckdb -c "PRAGMA platform; PRAGMA version;"
           if [[ "${{ inputs.is_release_build }}" == "true" ]]; then
             # Fail on a zero major version.
             ./build/release/duckdb -ascii -noheader -c "SELECT library_version FROM pragma_version() WHERE library_version NOT LIKE 'v0%'" | grep '^v';
           fi
-
       - name: Verify architecture flags
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         run: grep -Fq -- '-Xarch_arm64 -mcpu=apple-m1' build/release/compile_commands.json
 
         #     from https://docs.github.com/en/actions/deployment/deploying-xcode-applications/installing-an-apple-certificate-on-macos-runners-for-xcode-development
       - name: Sign Binaries
-        if: github.repository == 'duckdb/duckdb' && github.event_name != 'pull_request'
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1') && (github.repository == 'duckdb/duckdb' && github.event_name != 'pull_request')
         shell: bash
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.OSX_CODESIGN_BUILD_CERTIFICATE_BASE64 }}
@@ -166,8 +212,8 @@ jobs:
               exit 1
             fi
           fi
-
       - name: Deploy
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         shell: bash
         env:
           AWS_ENDPOINT_URL: ${{ secrets.S3_DUCKDB_STAGING_ENDPOINT }}
@@ -278,91 +324,94 @@ jobs:
           make release-artifact \
             RELEASE_ARTIFACT_SOURCE_DIR=build/release_amd64 \
             RELEASE_ARTIFACT_TARBALL=build/release-artifacts/osx-release-amd64-build.tar.gz
-
       - uses: actions/upload-artifact@v7
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         with:
           path: duckdb-cli-osx-universal.tar.gz
           archive: false
-
       - uses: actions/upload-artifact@v7
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         with:
           path: duckdb-cli-osx-arm64.tar.gz
           archive: false
-
       - uses: actions/upload-artifact@v7
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         with:
           path: duckdb-cli-osx-amd64.tar.gz
           archive: false
-
       - uses: actions/upload-artifact@v7
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         with:
           path: duckdb-shared-libs-osx-universal.tar.gz
           archive: false
-
       - uses: actions/upload-artifact@v7
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         with:
           path: duckdb-shared-libs-osx-arm64.tar.gz
           archive: false
-
       - uses: actions/upload-artifact@v7
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         with:
           path: duckdb-shared-libs-osx-amd64.tar.gz
           archive: false
-
       - uses: actions/upload-artifact@v7
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         with:
           path: duckdb-static-libs-osx-arm64.tar.gz
           archive: false
-
       - uses: actions/upload-artifact@v7
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         with:
           path: duckdb-static-libs-osx-amd64.tar.gz
           archive: false
-
       - uses: actions/upload-artifact@v7
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         with:
           name: release-core-extensions-osx-arm64
           path: build/release_arm64/core_extensions/repository
           if-no-files-found: error
-
       - uses: actions/upload-artifact@v7
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         with:
           name: release-core-extensions-osx-amd64
           path: build/release_amd64/core_extensions/repository
           if-no-files-found: error
-
       - uses: actions/upload-artifact@v7
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         with:
           path: build/release-artifacts/osx-release-arm64-build.tar.gz
           if-no-files-found: error
           archive: false
-
       - uses: actions/upload-artifact@v7
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1')
         with:
           path: build/release-artifacts/osx-release-amd64-build.tar.gz
           if-no-files-found: error
           archive: false
-
       - name: Unit Test
         shell: bash
-        if: ${{ !inputs.skip_tests }}
-        run: make allunit
-
+        if: steps.look.outputs.run == 'true' && (!inputs.skip_tests)
+        run: |
+          build/release/test/unittest --list-tests '*' > "$RUNNER_TEMP/all.list" || true
+          python3 .github/outrun/split.py "$RUNNER_TEMP/all.list" ${{ matrix.shard }} 2 > "$RUNNER_TEMP/shard.list"
+          ./build/release/test/run --workers=50% --test-list "$RUNNER_TEMP/shard.list"
       - name: Tools Tests
         shell: bash
-        if: ${{ !inputs.skip_tests }}
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1') && (!inputs.skip_tests)
         run: |
           python -m pytest tools/shell/tests --shell-binary build/release/duckdb
-
       - name: Unittest Stdin Tests
         shell: bash
-        if: ${{ !inputs.skip_tests }}
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1') && (!inputs.skip_tests)
         run: |
           python -m pytest tools/sqllogic/tests --unittest-binary build/release/test/unittest
-
       - name: Examples
         shell: bash
-        if: ${{ !inputs.skip_tests }}
+        if: steps.look.outputs.run == 'true' && (matrix.shard == '1') && (!inputs.skip_tests)
         run: |
           (cd examples/embedded-c; make)
           (cd examples/embedded-c++; make)
+      - name: "outrun: record osx-release-${{ matrix.shard }}"
+        if: success() && steps.look.outputs.run == 'true'
+        shell: bash
+        run: .github/outrun/run record "osx-release-${{ matrix.shard }}" --key "${{ steps.look.outputs.key }}" --since ${{ steps.start.outputs.at }}
