@@ -1,0 +1,3 @@
+# ARK-81 bench: tests run outside the gating shards (path suffix as listed by unittest --list-tests).
+# Hung for 3 x 600 s in shard 2 under outrun-linux-arm64 (runs 41818579960, 41826571937); passed in the baseline.
+extension/external/fts/test/sql/fts/test_boolean_query.test

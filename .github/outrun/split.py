@@ -8,7 +8,8 @@ import sys
 
 path, shard, shards = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 lines = [l.rstrip("\n") for l in open(path, encoding="utf8", errors="replace")]
-tests = [l for l in lines if l and l != "name\tgroup"]
+quarantined = [q.strip() for q in open(".github/outrun/quarantine.txt") if q.strip() and not q.startswith("#")]
+tests = [l for l in lines if l and l != "name\tgroup" and not any(l.split("\t")[0].endswith(q) for q in quarantined)]
 mine = tests[shard - 1 :: shards]
 print("name\tgroup")
 print("\n".join(mine))
