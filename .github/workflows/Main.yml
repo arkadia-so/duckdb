@@ -1,4 +1,5 @@
 name: Main
+# ARK-81 engine v2: the sqllogictest files are per-file units of outrun's catch2 suite.
 # ARK-81 bench: upstream Main.yml cut to its main test jobs, runs-on swapped to outrun-linux-arm64 (ARM64) and
 # outrun-macos. Kept: prepare, Linux Relassert (build), Linux Relassert Tests, osx (OSX Debug, OSX Release).
 # The two Linux jobs run in upstream's manylinux aarch64 image instead of the amd64 one (same image, other arch).
@@ -335,18 +336,23 @@ jobs:
       run: |
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
         .github/outrun/run lookup "relassert-${{ matrix.shard }}"
+        # v2: the sqllogictest files are units of outrun's catch2 suite, sharded by outrun.
+        if [ "${{ matrix.shard }}" != bench ]; then
+          .github/outrun/run test --dry-run --shard ${{ matrix.shard }}/3 2>&1 | tee "$RUNNER_TEMP/dry.txt"
+          if grep -q "this runner (${{ matrix.shard }}/3): 0 misses and 0 audits" "$RUNNER_TEMP/dry.txt"; then echo "tests=false" >> "$GITHUB_OUTPUT"; else echo "tests=true" >> "$GITHUB_OUTPUT"; fi
+        else echo "tests=false" >> "$GITHUB_OUTPUT"; fi
     - uses: ./.github/actions/ccache-action
-      if: steps.look.outputs.run == 'true'
+      if: steps.look.outputs.run == 'true' || steps.look.outputs.tests == 'true'
       with:
         save: ${{ matrix.shard == '1' && fromJson(needs.prepare.outputs.save_cache) }}
     - name: Write changed tests file
-      if: steps.look.outputs.run == 'true'
+      if: steps.look.outputs.run == 'true' || steps.look.outputs.tests == 'true'
       shell: bash
       env:
         CHANGED_TESTS_FILES: ${{ needs.prepare.outputs.changed_tests_files }}
       run: printf '%s\n' "$CHANGED_TESTS_FILES" | sed '/^$/d' > "$RUNNER_TEMP/changed_tests.txt"
     - name: Build DuckDB
-      if: steps.look.outputs.run == 'true'
+      if: steps.look.outputs.run == 'true' || steps.look.outputs.tests == 'true'
       uses: duckdb/duckdb-ci/build-duckdb@main
       env:
         CORE_EXTENSIONS: "icu;tpch;tpcds;fts;json;inet;parquet;autocomplete;httpfs"
@@ -358,17 +364,21 @@ jobs:
         test: ${{ matrix.shard == '1' && 'make smoke T="--changed-tests=$RUNNER_TEMP/changed_tests.txt"' || '' }}
         save-cache: ${{ matrix.shard == '1' && fromJson(needs.prepare.outputs.save_cache) }}
     - name: Output version info
-      if: steps.look.outputs.run == 'true'
+      if: steps.look.outputs.run == 'true' || steps.look.outputs.tests == 'true'
       run: ./build/relassert/duckdb -c "PRAGMA version;"
     - name: Set DUCKDB_INSTALL_LIB for ADBC tests
-      if: steps.look.outputs.run == 'true'
+      if: steps.look.outputs.run == 'true' || steps.look.outputs.tests == 'true'
       run: echo "DUCKDB_INSTALL_LIB=$(find "$PWD" -name 'libduck*.so' | head -n 1)" >> "$GITHUB_ENV"
-    - name: Test
+    - name: Test (compiled tests)
       if: steps.look.outputs.run == 'true' && (matrix.shard != 'bench')
       run: |
         build/relassert/test/unittest --list-tests > "$RUNNER_TEMP/all.list" || true
-        python3 .github/outrun/split.py "$RUNNER_TEMP/all.list" ${{ matrix.shard }} 3 > "$RUNNER_TEMP/shard.list"
+        awk -F'\t' 'NR == 1 || $1 !~ /\.test$/' "$RUNNER_TEMP/all.list" > "$RUNNER_TEMP/compiled.list"
+        python3 .github/outrun/split.py "$RUNNER_TEMP/compiled.list" ${{ matrix.shard }} 3 > "$RUNNER_TEMP/shard.list"
         build/relassert/test/run --track-runtime=100 --test-list "$RUNNER_TEMP/shard.list"
+    - name: Test (sqllogictest files, outrun by file)
+      if: steps.look.outputs.tests == 'true'
+      run: .github/outrun/run test --shard ${{ matrix.shard }}/3
     - name: Test Benchmark SQL
       if: steps.look.outputs.run == 'true' && (matrix.shard == 'bench')
       run: make test_benchmark_sql

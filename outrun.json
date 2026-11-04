@@ -1,7 +1,29 @@
 {
   "inputs": [],
   "env": [],
-  "suites": [],
+  "suites": [
+    {
+      "name": "sqllogic",
+      "adapter": "catch2",
+      "dir": ".",
+      "tests": [
+        "test/**/*.test"
+      ],
+      "run": [
+        "build/relassert/test/unittest"
+      ],
+      "inputs": [
+        "**/*",
+        "!**/*.md",
+        "!test/**/*.test"
+      ],
+      "sources": [
+        "declared"
+      ],
+      "defaultMs": 1500,
+      "timeoutMs": 1200000
+    }
+  ],
   "trustedRef": "refs/heads/bench/engine",
   "commands": [
     {
@@ -9,7 +31,8 @@
       "run": "make relassert (ccache) + unittest shard 1/3 (round-robin) + smoke",
       "inputs": [
         "**/*",
-        "!**/*.md"
+        "!**/*.md",
+        "!test/**/*.test"
       ]
     },
     {
@@ -17,7 +40,8 @@
       "run": "make relassert (ccache) + unittest shard 2/3 (round-robin)",
       "inputs": [
         "**/*",
-        "!**/*.md"
+        "!**/*.md",
+        "!test/**/*.test"
       ]
     },
     {
@@ -25,7 +49,8 @@
       "run": "make relassert (ccache) + unittest shard 3/3 (round-robin)",
       "inputs": [
         "**/*",
-        "!**/*.md"
+        "!**/*.md",
+        "!test/**/*.test"
       ]
     },
     {
