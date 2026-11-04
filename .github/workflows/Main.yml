@@ -268,7 +268,7 @@ jobs:
       # ARK-81 bench: skipped. Its format check pins clang_format==11.0.1, which has no aarch64 wheel and builds
       # LLVM from source (needs cmake, absent from outrun's image). These are lint checks, not the tests.
       - name: Run prepare checks
-        if: false
+        if: github.repository == 'duckdb/duckdb'
         timeout-minutes: 10
         run: |
           python3 scripts/ci/retry.py --timeout 2m -- make -j4 prepare_tools
