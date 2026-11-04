@@ -383,7 +383,7 @@ jobs:
       run: |
         grep -v '^#' .github/outrun/quarantine.txt | while read -r t; do
           [ -n "$t" ] || continue
-          timeout 120 build/relassert/test/unittest "$t" || echo "::warning::quarantined $t failed or timed out (not gating)"
+          timeout 120 build/relassert/test/unittest "$PWD/$t" || echo "::warning::quarantined $t failed or timed out (not gating)"
         done
     - name: Test (sqllogictest files, outrun by file)
       if: steps.look.outputs.tests == 'true'
