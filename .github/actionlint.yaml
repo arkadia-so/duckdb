@@ -10,3 +10,6 @@ self-hosted-runner:
     - namespace-profile-windows-x64
     - namespace-profile-macos-arm64
     - namespace-profile-macos-14-arm64
+    # ARK-81 bench: outrun's labels.
+    - outrun-linux-arm64
+    - outrun-macos

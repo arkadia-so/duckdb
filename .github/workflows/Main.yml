@@ -184,6 +184,11 @@ jobs:
               - extension/**
               - scripts/**
 
+      # ARK-81 bench: outrun's Linux image has no shellcheck (GitHub's has it); Lint CI runs because .github changed.
+      - name: 'outrun: install shellcheck'
+        if: steps.changed.outputs.github_any_changed == 'true'
+        run: command -v shellcheck || (sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck)
+
       - name: Lint CI
         if: steps.changed.outputs.github_any_changed == 'true'
         timeout-minutes: 10
