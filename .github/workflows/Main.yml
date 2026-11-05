@@ -43,7 +43,7 @@ permissions:
 
 env:
   GH_TOKEN: ${{ secrets.GH_TOKEN }}
-  OUTRUN_CACHE_URL: https://turbo-cache.arkadia.so
+  OUTRUN_CACHE_URL: https://cache.outrun.sh
   OUTRUN_CACHE_TEAM: ${{ inputs.cache || 'outrun' }}
   # Override extension CI matrix reduction with "enabled" or "disabled".
   # Use "disabled" on risky PRs to run the full extension matrix.
